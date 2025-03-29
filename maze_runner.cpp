@@ -4,6 +4,7 @@
 #include <stack>
 #include <thread>
 #include <chrono>
+#include <mutex>
 
 // Representação do labirinto
 using Maze = std::vector<std::vector<char>>;
@@ -14,11 +15,14 @@ struct Position {
     int col;
 };
 
+using namespace std;
+
 // Variáveis globais
 Maze maze;
 int num_rows;
 int num_cols;
 std::stack<Position> valid_positions;
+mutex m; // mutex para proteger o acesso ao labirinto
 
 // Função para carregar o labirinto de um arquivo
 Position load_maze(const std::string& file_name) {
@@ -31,7 +35,40 @@ Position load_maze(const std::string& file_name) {
     // 6. Trate possíveis erros (arquivo não encontrado, formato inválido, etc.)
     // 7. Feche o arquivo após a leitura
     
-    return {-1, -1}; // Placeholder - substitua pelo valor correto
+    //1. abrir arquivo
+    std::ifstream file(file_name);
+    if (!file) {
+        std::cout << "Arquivo não encontrado.\n";
+        // return {-1, -1};
+    }
+
+    //2. Dimensoes do labirinto
+    file >> num_rows >> num_cols; // aloca na variável
+    // std::cout << num_rows;
+    // std::cout << num_cols;
+    file.ignore(); // pula uma linha
+
+    maze.resize(num_rows, std::vector<char>(num_cols)); //vetor de vetores
+    Position start_position = {-1, -1}; //inicializacao negativa p nao dar erro
+
+    // Lendo o conteúdo do labirinto
+    for (int i = 0; i < num_rows; i++) {
+        for (int j = 0; j < num_cols; j++) {
+            file.get(maze[i][j]); //le apenas um caractere
+            std::cout << maze[i][j] << "\n";
+            if (maze[i][j] == '\n') {
+                file.get(maze[i][j]); // Se encontrou uma quebra de linha, pegar próximo caractere
+            }
+            if (maze[i][j] == 'e') {
+                start_position = {i, j}; // guarda posicao de entrada
+            } else if (maze[i][j] != 'x' && maze[i][j] != '#' && maze[i][j] != 's') {
+                std::cout << "Caractere invalido encontrado:" << maze[i][j]<<"\n";
+                // return {-1, -1};
+            }
+        }
+    }
+    file.close();
+    return start_position;
 }
 
 // Função para imprimir o labirinto
@@ -40,6 +77,17 @@ void print_maze() {
     // 1. Percorra a matriz 'maze' usando um loop aninhado
     // 2. Imprima cada caractere usando std::cout
     // 3. Adicione uma quebra de linha (std::cout << '\n') ao final de cada linha do labirinto
+
+    m.lock();
+
+    for(int i=0; i<num_rows; i++){
+        for(int j=0; j<num_cols; j++){
+            std::cout << maze[i][j];
+        }
+        std::cout << "\n";
+    }
+    m.unlock();
+    std::cout << std::endl; // linha em branco para separar as atualizações do labirinto
 }
 
 // Função para verificar se uma posição é válida
@@ -50,7 +98,14 @@ bool is_valid_position(int row, int col) {
     // 2. Verifique se a posição é um caminho válido (maze[row][col] == 'x')
     // 3. Retorne true se ambas as condições forem verdadeiras, false caso contrário
 
-    return false; // Placeholder - substitua pela lógica correta
+    // ve se esta dentro do mapa
+    if (row >= 0 && row < num_rows && col >= 0 && col < num_cols) {
+        // ve se pode
+        if (maze[row][col] == 'x' || maze[row][col] == 's') {
+            return true;
+        }
+    }
+    return false;
 }
 
 // Função principal para navegar pelo labirinto
@@ -71,7 +126,60 @@ bool walk(Position pos) {
     //    c. Se walk retornar true, propague o retorno (retorne true)
     // 7. Se todas as posições foram exploradas sem encontrar a saída, retorne false
     
-    return false; // Placeholder - substitua pela lógica correta
+        m.lock();
+        if (maze[pos.row][pos.col] == 's') {
+            // esse eh o item 4 do escopo, porem se essa comparacao eh feita 
+            // apos marcacao de posicao visitada nao funciona
+            m.unlock();
+            return true; // saiu
+        } 
+        m.unlock();
+        maze[pos.row][pos.col] = '.'; //marca a posição atual como visitada
+
+    //system("clear");
+    print_maze();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100)); //atraso de 100ms para visualizacao
+
+    //verificação das posições adjacentes (cima, baixo, esquerda, direita)
+    std::vector<Position> directions = {
+        {pos.row - 1, pos.col}, // Cima
+        {pos.row + 1, pos.col}, // Baixo
+        {pos.row, pos.col - 1}, // Esquerda
+        {pos.row, pos.col + 1}  // Direita
+    };
+
+    std::vector<std::thread> threads; // Armazena threads criadas para caminhos alternativos
+    bool found_exit = false;
+
+
+    for (size_t i = 0; i < directions.size(); i++) {
+        if (is_valid_position(directions[i].row, directions[i].col)) {
+            if (i == 0) {
+                // A thread principal continua explorando o primeiro caminho
+                found_exit = walk(directions[i]);
+            } else {
+                // Cria uma nova thread para explorar os outros caminhos
+                threads.emplace_back([&found_exit, directions, i]() {
+                    if (walk(directions[i])) {
+                        m.lock();
+                        found_exit = true; // Atualiza a variável compartilhada se a saída for encontrada
+                        m.unlock();
+                    }
+                });
+            }
+        }
+    }
+    
+    // Aguarda todas as threads criadas
+    for (auto& t : threads) {
+        t.join();
+    }
+
+    return found_exit;
+
+    // 7. Se todas as posições foram exploradas sem encontrar a saída, retorne false
+    return false;
 }
 
 int main(int argc, char* argv[]) {
